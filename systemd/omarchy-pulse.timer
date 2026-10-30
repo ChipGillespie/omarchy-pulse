@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly Timer for Omarchy Pulse System Health Audit
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

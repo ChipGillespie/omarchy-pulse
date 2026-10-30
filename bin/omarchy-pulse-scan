@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Weekly/CLI System Health Scanner for Omarchy Pulse.
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+PROJECT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+QUIET=0
+if [[ "${1:-}" == "--quiet" ]]; then
+  QUIET=1
+fi
+
+export PYTHONPATH="$PROJECT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+SUMMARY_JSON=$(python3 - <<'PY'
+import json
+from pulse.scanner import run_full_scan
+
+report = run_full_scan()
+up = report["updates"]
+net = report["network"]
+dm = report["daemons"]
+
+print(json.dumps({
+    "score": report["health_score"],
+    "status": report["status_label"],
+    "findings": report["findings"],
+    "updates_total": up["total_count"],
+    "omarchy_update": up["omarchy_update_available"],
+    "deferred": up["deferred"]["active"],
+    "net_alerts": net["unapproved_listeners_count"] + net["suspicious_connections_count"],
+    "daemon_alerts": dm["unmuted_failed_count"] + dm["high_severity_anomalies_count"],
+}))
+PY
+)
+
+# Sync Omarchy top-bar update badge unless updates are currently deferred
+DEFERRED=$(printf '%s' "$SUMMARY_JSON" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin)["deferred"] else "0")')
+if [[ "$DEFERRED" == "1" ]]; then
+  omarchy-shell -q omarchy.system-update clear >/dev/null 2>&1 || true
+else
+  omarchy-update-status >/dev/null 2>&1 || true
+fi
+
+if (( QUIET == 0 )); then
+  SCORE=$(printf '%s' "$SUMMARY_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["score"])')
+  STATUS=$(printf '%s' "$SUMMARY_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
+  BODY=$(printf '%s' "$SUMMARY_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(d["findings"][:3]))')
+  URGENCY="normal"
+  if (( SCORE < 75 )); then
+    URGENCY="critical"
+  fi
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a "System Health" -u "$URGENCY" "System Health: $SCORE/100 ($STATUS)" "$BODY" || true
+  fi
+  printf 'System Health Score: %s/100 (%s)\n%s\n' "$SCORE" "$STATUS" "$BODY"
+fi

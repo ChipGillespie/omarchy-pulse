@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>System Health — Omarchy Pulse</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-glyph">󰓦</div>
+        <div>
+          <div class="brand-title">System Health</div>
+          <div class="brand-sub" id="sidebar-theme-label">Omarchy Pulse</div>
+        </div>
+      </div>
+
+      <nav class="nav-list">
+        <button class="nav-item active" data-tab="overview">
+          <span class="nav-icon">󰕮</span>
+          <span class="nav-label">System Pulse</span>
+          <span class="nav-badge" id="badge-overview"></span>
+        </button>
+        <button class="nav-item" data-tab="live">
+          <span class="nav-icon">󰓅</span>
+          <span class="nav-label">Live Monitor (btop)</span>
+          <span class="nav-badge" id="badge-live">LIVE</span>
+        </button>
+        <button class="nav-item" data-tab="updates">
+          <span class="nav-icon">󰚰</span>
+          <span class="nav-label">Omarchy Updates</span>
+          <span class="nav-badge" id="badge-updates"></span>
+        </button>
+        <button class="nav-item" data-tab="network">
+          <span class="nav-icon">󰛳</span>
+          <span class="nav-label">Network &amp; Listeners</span>
+          <span class="nav-badge" id="badge-network"></span>
+        </button>
+        <button class="nav-item" data-tab="daemons">
+          <span class="nav-icon">󰒋</span>
+          <span class="nav-label">Daemons &amp; Security</span>
+          <span class="nav-badge" id="badge-daemons"></span>
+        </button>
+        <button class="nav-item" data-tab="storage">
+          <span class="nav-icon">󰋊</span>
+          <span class="nav-label">Cache &amp; Storage</span>
+          <span class="nav-badge" id="badge-storage"></span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div id="helper-status-box" class="helper-status"></div>
+        <button id="btn-run-scan" class="btn btn-primary btn-block">
+          <span id="scan-btn-icon">󰑐</span>
+          <span id="scan-btn-text">Run Full Audit</span>
+        </button>
+        <div class="last-scan-meta" id="last-scan-time">Loading...</div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <div id="toast-container" class="toast-container"></div>
+
+      <!-- TAB 1: OVERVIEW -->
+      <section id="tab-overview" class="tab-panel active">
+        <div class="hero-card">
+          <div class="score-ring-wrap">
+            <svg class="score-ring" viewBox="0 0 120 120">
+              <circle class="score-ring-bg" cx="60" cy="60" r="50"></circle>
+              <circle id="score-ring-fg" class="score-ring-fg" cx="60" cy="60" r="50"></circle>
+            </svg>
+            <div class="score-center">
+              <div id="health-score-val" class="score-number">--</div>
+              <div class="score-caption">SCORE</div>
+            </div>
+          </div>
+
+          <div class="hero-details">
+            <div class="hero-header">
+              <h1 id="health-status-title">Scanning System...</h1>
+              <span id="reboot-pill" class="pill pill-warn hidden">Reboot Required</span>
+            </div>
+            <p class="hero-meta" id="system-meta-line">--</p>
+            <ul class="findings-list" id="findings-list"></ul>
+          </div>
+        </div>
+
+        <div class="grid-4">
+          <div class="metric-card clickable" data-goto="updates">
+            <div class="metric-top">
+              <span class="metric-title">Pending Updates</span>
+              <span class="metric-icon">󰚰</span>
+            </div>
+            <div class="metric-val" id="ov-updates-val">--</div>
+            <div class="metric-sub" id="ov-updates-sub">--</div>
+          </div>
+
+          <div class="metric-card clickable" data-goto="network">
+            <div class="metric-top">
+              <span class="metric-title">Network &amp; Tailscale</span>
+              <span class="metric-icon">󰛳</span>
+            </div>
+            <div class="metric-val" id="ov-net-val">--</div>
+            <div class="metric-sub" id="ov-net-sub">--</div>
+          </div>
+
+          <div class="metric-card clickable" data-goto="daemons">
+            <div class="metric-top">
+              <span class="metric-title">Services &amp; Processes</span>
+              <span class="metric-icon">󰒋</span>
+            </div>
+            <div class="metric-val" id="ov-daemons-val">--</div>
+            <div class="metric-sub" id="ov-daemons-sub">--</div>
+          </div>
+
+          <div class="metric-card clickable" data-goto="storage">
+            <div class="metric-top">
+              <span class="metric-title">Btrfs Root &amp; Cache</span>
+              <span class="metric-icon">󰋊</span>
+            </div>
+            <div class="metric-val" id="ov-storage-val">--</div>
+            <div class="metric-sub" id="ov-storage-sub">--</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>System Information (fastfetch)</h2>
+              <span id="ff-user-host" class="pill">--</span>
+            </div>
+            <div id="fastfetch-grid" class="fastfetch-grid"></div>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>Resource Pressure</h2>
+              <button class="btn btn-outline btn-sm" data-goto="live">Open Live Monitor ▸</button>
+            </div>
+            <div class="progress-group">
+              <div class="progress-label">
+                <span>CPU Load Average</span>
+                <span id="ov-load-badge">--</span>
+              </div>
+            </div>
+            <div class="progress-group">
+              <div class="progress-label">
+                <span>Memory Usage</span>
+                <span id="ov-mem-text">--</span>
+              </div>
+              <div class="progress-track"><div id="ov-mem-bar" class="progress-fill"></div></div>
+            </div>
+            <div class="progress-group">
+              <div class="progress-label">
+                <span>Root Filesystem (Btrfs)</span>
+                <span id="ov-disk-text">--</span>
+              </div>
+              <div class="progress-track"><div id="ov-disk-bar" class="progress-fill"></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 1.5: LIVE MONITOR (BTOP STYLE) -->
+      <section id="tab-live" class="tab-panel">
+        <div class="panel-card">
+          <div class="split-header" style="margin-bottom:0">
+            <div>
+              <h2>Real-Time System Utilization (btop Monitor)</h2>
+              <p class="text-muted">Zero-subprocess kernel /proc &amp; /sys telemetry. Polls every 1.5s only while this tab is open.</p>
+            </div>
+            <div class="action-row">
+              <button id="btn-live-pause" class="btn btn-secondary btn-sm">Pause</button>
+              <button id="btn-sort-cpu" class="btn btn-primary btn-sm">Sort: CPU%</button>
+              <button id="btn-sort-mem" class="btn btn-secondary btn-sm">Sort: MEM%</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <!-- CPU Box -->
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>CPU Utilization</h2>
+              <span class="pill" id="live-cpu-temp">-- °C</span>
+            </div>
+            <div class="progress-group">
+              <div class="progress-label">
+                <span><strong>Total CPU</strong></span>
+                <span id="live-cpu-total">0%</span>
+              </div>
+              <div class="progress-track"><div id="live-cpu-bar" class="progress-fill"></div></div>
+            </div>
+            <div id="live-cores-list" class="cores-list"></div>
+          </div>
+
+          <!-- GPU Box -->
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>GPU Utilization</h2>
+              <span class="pill" id="live-gpu-clock">-- MHz</span>
+            </div>
+            <div class="text-muted" id="live-gpu-name" style="margin-bottom:10px">Intel UHD Graphics</div>
+            <div class="progress-group">
+              <div class="progress-label">
+                <span><strong>GPU Active Load</strong></span>
+                <span id="live-gpu-pct">0%</span>
+              </div>
+              <div class="progress-track"><div id="live-gpu-bar" class="progress-fill"></div></div>
+            </div>
+            <div class="kv-mini-list" id="live-gpu-details"></div>
+
+            <h3 class="sub-heading">Network Throughput</h3>
+            <div class="kv-mini-list" id="live-net-rates"></div>
+          </div>
+
+          <!-- Memory & Swap Box -->
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>Memory &amp; Swap</h2>
+              <span class="pill" id="live-mem-pct">0%</span>
+            </div>
+            <div class="progress-group">
+              <div class="progress-label">
+                <span>Used RAM</span>
+                <span id="live-mem-used">--</span>
+              </div>
+              <div class="progress-track"><div id="live-mem-bar" class="progress-fill"></div></div>
+            </div>
+            <div class="progress-group">
+              <div class="progress-label">
+                <span>Swap</span>
+                <span id="live-swap-used">--</span>
+              </div>
+              <div class="progress-track"><div id="live-swap-bar" class="progress-fill"></div></div>
+            </div>
+            <div class="kv-mini-list" id="live-mem-breakdown"></div>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <div class="panel-header">
+            <h2>Active Processes (Real-Time Delta)</h2>
+            <span class="text-muted" id="live-proc-meta">Refreshing every 1.5s</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>PID</th>
+                  <th>Process</th>
+                  <th>User</th>
+                  <th>State</th>
+                  <th>Threads</th>
+                  <th>CPU%</th>
+                  <th>MEM%</th>
+                  <th>RSS</th>
+                </tr>
+              </thead>
+              <tbody id="live-procs-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: UPDATES & DEFERRAL -->
+      <section id="tab-updates" class="tab-panel">
+        <div class="panel-card highlight-card">
+          <div class="split-header">
+            <div>
+              <h2 id="up-headline">Omarchy &amp; Package Updates</h2>
+              <p class="text-muted" id="up-subline">Checks official Arch repositories (checkupdates), Omarchy releases, and AUR packages.</p>
+            </div>
+            <div class="action-row">
+              <button id="btn-install-updates" class="btn btn-primary">
+                <span>󰚰</span> Accept &amp; Install (omarchy-update)
+              </button>
+              <button id="btn-defer-24h" class="btn btn-secondary">Defer 24h</button>
+              <button id="btn-defer-7d" class="btn btn-secondary">Defer 7 Days</button>
+              <button id="btn-undefer" class="btn btn-outline hidden">Resume Alerts</button>
+            </div>
+          </div>
+          <div id="defer-banner" class="alert-box hidden"></div>
+          <div id="omarchy-release-box" class="alert-box ok-box hidden"></div>
+        </div>
+
+        <div class="panel-card">
+          <div class="panel-header">
+            <h2>Pending Packages (<span id="up-total-count">0</span>)</h2>
+            <div class="pill-group">
+              <span class="pill" id="up-repo-pill">0 Repo</span>
+              <span class="pill" id="up-aur-pill">0 AUR</span>
+              <span class="pill pill-warn" id="up-crit-pill">0 Core</span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Package</th>
+                  <th>Source</th>
+                  <th>Current Version</th>
+                  <th>New Version</th>
+                  <th>Priority</th>
+                </tr>
+              </thead>
+              <tbody id="up-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: NETWORK & LISTENERS -->
+      <section id="tab-network" class="tab-panel">
+        <div class="grid-3">
+          <div class="panel-card">
+            <div class="metric-top">
+              <span class="metric-title">Tailscale Mesh</span>
+              <span id="net-ts-pill" class="pill">--</span>
+            </div>
+            <div class="metric-val" id="net-ts-ip">--</div>
+            <div class="metric-sub" id="net-ts-peers">--</div>
+          </div>
+
+          <div class="panel-card">
+            <div class="metric-top">
+              <span class="metric-title">Listening Sockets</span>
+              <span id="net-listen-pill" class="pill">--</span>
+            </div>
+            <div class="metric-val" id="net-listen-val">--</div>
+            <div class="metric-sub" id="net-listen-sub">--</div>
+          </div>
+
+          <div class="panel-card">
+            <div class="metric-top">
+              <span class="metric-title">External Connections</span>
+              <span id="net-conn-pill" class="pill">--</span>
+            </div>
+            <div class="metric-val" id="net-conn-val">--</div>
+            <div class="metric-sub" id="net-fw-sub">--</div>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>Listening Ports &amp; Daemons (ss -tulnp)</h2>
+              <p class="text-muted">Loopback (127.0.0.1/::1) and Tailscale (100.64.0.0/10) are trusted automatically. Approve expected LAN/wildcard listeners to baseline them.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Proto</th>
+                  <th>Local Address</th>
+                  <th>Port</th>
+                  <th>Process (PID)</th>
+                  <th>Scope</th>
+                  <th>Status</th>
+                  <th>Baseline Action</th>
+                </tr>
+              </thead>
+              <tbody id="net-listeners-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>Active Established Connections (ss -tunp)</h2>
+              <p class="text-muted">Flags non-browser processes or unusual ports connecting outside LAN and Tailscale.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Proto</th>
+                  <th>Process (PID)</th>
+                  <th>Local Endpoint</th>
+                  <th>Remote Endpoint</th>
+                  <th>Network Scope</th>
+                  <th>Assessment</th>
+                </tr>
+              </thead>
+              <tbody id="net-conns-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: DAEMONS & SECURITY -->
+      <section id="tab-daemons" class="tab-panel">
+        <div class="panel-card">
+          <div class="panel-header">
+            <div>
+              <h2>Systemd Failed Units (System &amp; User)</h2>
+              <p class="text-muted">Mute known hardware/TPM units that do not impact your workflow so new failures stand out.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Scope</th>
+                  <th>Unit Name</th>
+                  <th>Description</th>
+                  <th>State</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="dm-failed-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Process Executable Audit (/proc)</h2>
+                <p class="text-muted">Checks for binaries running from /tmp, /dev/shm, or deleted paths.</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>PID</th>
+                    <th>Process</th>
+                    <th>Executable Target</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody id="dm-anomalies-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Enabled Services Baseline &amp; Crashes</h2>
+                <p class="text-muted" id="dm-services-summary">--</p>
+              </div>
+              <button id="btn-approve-services" class="btn btn-secondary btn-sm hidden">Approve New Services</button>
+            </div>
+            <div id="dm-new-services-box" class="alert-box hidden"></div>
+            <h3 class="sub-heading">Recent Application Crashes (7 Days)</h3>
+            <div class="table-wrap compact">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>PID</th>
+                    <th>Signal</th>
+                    <th>Binary</th>
+                  </tr>
+                </thead>
+                <tbody id="dm-crashes-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: CACHE & STORAGE -->
+      <section id="tab-storage" class="tab-panel">
+        <div class="grid-2">
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>System Cache &amp; Orphan Cleanup</h2>
+              <span class="pill" id="st-reclaim-pill">-- Reclaimable</span>
+            </div>
+            <div class="cleanup-list">
+              <div class="cleanup-row">
+                <div>
+                  <div class="cleanup-title">Pacman Package Cache (/var/cache/pacman/pkg)</div>
+                  <div class="cleanup-sub" id="st-paccache-sub">--</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" data-action="clean-paccache">Prune (Keep 2)</button>
+              </div>
+
+              <div class="cleanup-row">
+                <div>
+                  <div class="cleanup-title">AUR Build Cache (~/.cache/yay)</div>
+                  <div class="cleanup-sub" id="st-yay-sub">--</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" data-action="clean-aur-cache">Clear Cache</button>
+              </div>
+
+              <div class="cleanup-row">
+                <div>
+                  <div class="cleanup-title">Systemd Journal Logs (/var/log/journal)</div>
+                  <div class="cleanup-sub" id="st-journal-sub">--</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" data-action="vacuum-journal">Vacuum &gt;14d</button>
+              </div>
+
+              <div class="cleanup-row">
+                <div>
+                  <div class="cleanup-title">Orphaned Packages (pacman -Qdtq)</div>
+                  <div class="cleanup-sub" id="st-orphans-sub">--</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" data-action="remove-orphans">Review &amp; Remove</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2>Home Directory Breakdown &amp; Btrfs Health</h2>
+              <span class="pill pill-ok" id="st-btrfs-pill">--</span>
+            </div>
+            <div id="st-home-bars" class="storage-bars"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

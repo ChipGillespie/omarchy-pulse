@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Installs /usr/local/libexec/omarchy-pulse-helper and /etc/sudoers.d/omarchy-pulse safely.
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+PROJECT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+HELPER_SRC="$PROJECT_DIR/bin/omarchy-pulse-privileged"
+HELPER_DST="/usr/local/libexec/omarchy-pulse-helper"
+SUDOERS_DST="/etc/sudoers.d/omarchy-pulse"
+TARGET_USER="${SUDO_USER:-$USER}"
+
+TMP_SUDOERS="$(mktemp)"
+trap 'rm -f "$TMP_SUDOERS"' EXIT
+
+cat >"$TMP_SUDOERS" <<EOF
+# Strictly scoped root helper for Omarchy Pulse (System Health Dashboard)
+$TARGET_USER ALL=(root) NOPASSWD: $HELPER_DST status, \\
+  $HELPER_DST sockets-listen, \\
+  $HELPER_DST sockets-established, \\
+  $HELPER_DST proc-audit, \\
+  $HELPER_DST firewall, \\
+  $HELPER_DST btrfs-health, \\
+  $HELPER_DST clean-paccache, \\
+  $HELPER_DST vacuum-journal
+EOF
+
+echo "Installing Omarchy Pulse root helper and validating sudoers rule..."
+sudo install -d -m 0755 /usr/local/libexec
+sudo install -o root -g root -m 0755 "$HELPER_SRC" "$HELPER_DST"
+sudo visudo -cf "$TMP_SUDOERS"
+sudo install -o root -g root -m 0440 "$TMP_SUDOERS" "$SUDOERS_DST"
+
+echo "Success: $HELPER_DST and $SUDOERS_DST installed and verified."
+"$PROJECT_DIR/bin/omarchy-pulse-scan" --quiet || true

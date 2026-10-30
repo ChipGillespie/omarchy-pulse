@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Launches the on-demand Omarchy Pulse server on 127.0.0.1 and opens the dashboard window.
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+PROJECT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+HOST="127.0.0.1"
+PORT="18420"
+URL="http://${HOST}:${PORT}"
+
+export PYTHONPATH="$PROJECT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+# Check if server is already listening on 127.0.0.1:18420
+if ! curl -fsS --max-time 1 "${URL}/api/heartbeat" >/dev/null 2>&1; then
+  nohup python3 -m pulse.server --host "$HOST" --port "$PORT" </dev/null >/dev/null 2>&1 &
+  # Wait up to 3 seconds for socket readiness
+  for _ in {1..30}; do
+    if curl -fsS --max-time 1 "${URL}/api/heartbeat" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.1
+  done
+fi
+
+exec omarchy-launch-webapp "$URL"

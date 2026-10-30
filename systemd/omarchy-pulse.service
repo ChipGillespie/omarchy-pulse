@@ -1,0 +1,10 @@
+[Unit]
+Description=Omarchy Pulse Weekly System Health & Security Audit
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/omarchy-pulse-scan
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

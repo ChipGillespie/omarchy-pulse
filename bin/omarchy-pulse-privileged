@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Root-owned helper for Omarchy Pulse read-only socket/process/Btrfs inspection and cache pruning.
+set -euo pipefail
+
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export LC_ALL=C
+
+cmd="${1:-}"
+
+case "$cmd" in
+  status)
+    echo "ok"
+    ;;
+  sockets-listen)
+    exec /usr/bin/ss -tulnp
+    ;;
+  sockets-established)
+    exec /usr/bin/ss -tunp state established
+    ;;
+  proc-audit)
+    for pid_dir in /proc/[0-9]*; do
+      [[ -d "$pid_dir" ]] || continue
+      pid="${pid_dir#/proc/}"
+      exe=$(readlink "$pid_dir/exe" 2>/dev/null || true)
+      [[ -n "$exe" ]] || continue
+      comm=$(cat "$pid_dir/comm" 2>/dev/null || echo "unknown")
+      printf '%s\t%s\t%s\n' "$pid" "$comm" "$exe"
+    done
+    ;;
+  firewall)
+    if command -v ufw >/dev/null 2>&1; then
+      /usr/bin/ufw status verbose 2>/dev/null || true
+    fi
+    if command -v nft >/dev/null 2>&1; then
+      /usr/bin/nft list tables 2>/dev/null || true
+    fi
+    ;;
+  btrfs-health)
+    exec /usr/bin/btrfs device stats /
+    ;;
+  clean-paccache)
+    /usr/bin/paccache -rk2
+    /usr/bin/paccache -ruk0
+    ;;
+  vacuum-journal)
+    exec /usr/bin/journalctl --vacuum-time=14d
+    ;;
+  *)
+    echo "omarchy-pulse-helper: invalid subcommand '$cmd'" >&2
+    exit 2
+    ;;
+esac
