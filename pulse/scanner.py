@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import ipaddress
 import json
 import os
@@ -16,6 +17,8 @@ from typing import Any
 
 STATE_DIR = Path.home() / ".local/state/omarchy-pulse"
 REPORT_FILE = STATE_DIR / "latest_report.json"
+CLAMAV_REPORT_FILE = STATE_DIR / "clamav_report.json"
+FIM_BASELINE_FILE = STATE_DIR / "fim_baseline.json"
 HISTORY_FILE = STATE_DIR / "history.jsonl"
 BASELINE_FILE = STATE_DIR / "baseline.json"
 HELPER_BIN = Path("/usr/local/libexec/omarchy-pulse-helper")
@@ -182,12 +185,13 @@ def _human_bytes(num_bytes: int | float) -> str:
 
 
 def _dir_size_bytes(path: Path, max_depth: int = 3) -> int:
-    """Fast directory size calculation using du -sb."""
+    """Fast directory size calculation using du -sb (tolerates partial permission errors)."""
     if not path.exists():
         return 0
     rc, out, _ = _run(["du", "-sb", str(path)], timeout=8)
-    if rc == 0 and out.strip():
-        parts = out.strip().split()
+    if out and out.strip():
+        last_line = out.strip().splitlines()[-1]
+        parts = last_line.split()
         if parts and parts[0].isdigit():
             return int(parts[0])
     return 0
@@ -781,46 +785,680 @@ def check_processes_and_daemons(
     }
 
 
-def check_cleanup_and_storage(use_helper: bool) -> dict[str, Any]:
-    """Inspect reclaimable package caches, journals, orphans, Btrfs health, and directory sizes."""
+def collect_fim_snapshot() -> dict[str, dict[str, Any]]:
+    """Collect a fast (~8ms) SHA-256 & permission snapshot of critical system, PAM, SSH, and user files."""
     home = Path.home()
-
-    # 1. Pacman cache reclaimable bytes via paccache -dk2
-    paccache_reclaim_bytes = 0
-    paccache_pkg_dir = Path("/var/cache/pacman/pkg")
-    paccache_total_bytes = _dir_size_bytes(paccache_pkg_dir)
-    rc_pc, out_pc, _ = _run(["paccache", "-dk2"], timeout=10)
-    if rc_pc == 0 and "candidate" in out_pc:
-        # Also check uninstalled cache
-        pass
-    # Estimate reclaimable if more than 2 versions exist
-    rc_pcv, out_pcv, _ = _run(["paccache", "-dvk2"], timeout=10)
-    if rc_pcv == 0:
-        cand_files = [
-            line.strip()
-            for line in out_pcv.splitlines()
-            if line.strip().startswith("/var/cache/pacman/pkg/")
-        ]
-        for fp in cand_files:
+    fixed_files = [
+        Path("/etc/passwd"),
+        Path("/etc/group"),
+        Path("/etc/shells"),
+        Path("/etc/hosts"),
+        Path("/etc/nsswitch.conf"),
+        Path("/etc/ld.so.conf"),
+        Path("/etc/ld.so.preload"),
+        Path("/etc/environment"),
+        Path("/etc/profile"),
+        Path("/etc/ssh/sshd_config"),
+        home / ".ssh/authorized_keys",
+        home / ".ssh/config",
+        home / ".bashrc",
+        home / ".zshrc",
+        home / ".profile",
+        home / ".bash_profile",
+        home / ".zprofile",
+    ]
+    dirs_to_scan = [
+        Path("/etc/ssh/sshd_config.d"),
+        Path("/etc/pam.d"),
+        Path("/usr/local/bin"),
+        Path("/usr/local/sbin"),
+        Path("/usr/local/libexec"),
+        home / ".local/bin",
+        home / ".config/hypr",
+        home / ".config/autostart",
+        home / ".config/systemd/user",
+    ]
+    targets: set[Path] = set()
+    for f in fixed_files:
+        if f.is_file():
+            targets.add(f)
+    for d in dirs_to_scan:
+        if d.is_dir():
             try:
-                paccache_reclaim_bytes += Path(fp).stat().st_size
+                for child in d.iterdir():
+                    if (
+                        child.is_file()
+                        and not child.name.endswith(".bak")
+                        and ".bak." not in child.name
+                    ):
+                        targets.add(child)
             except Exception:
                 pass
 
-    # 2. AUR cache (~/.cache/yay)
-    yay_cache_dir = home / ".cache/yay"
-    yay_cache_bytes = _dir_size_bytes(yay_cache_dir)
+    records: dict[str, dict[str, Any]] = {}
+    for p in sorted(targets):
+        try:
+            st = p.stat()
+            if st.st_size > 10 * 1024 * 1024:
+                continue
+            digest = hashlib.sha256(p.read_bytes()).hexdigest()
+            records[str(p)] = {
+                "sha256": digest,
+                "mode": oct(st.st_mode & 0o7777),
+                "size": st.st_size,
+            }
+        except Exception:
+            pass
+    return records
 
-    # 3. Systemd journal usage
+
+def save_fim_baseline(records: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Save the current SHA-256 snapshot as the trusted FIM baseline."""
+    if records is None:
+        records = collect_fim_snapshot()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+        "files": records,
+    }
+    FIM_BASELINE_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
+
+
+def check_fim_baseline() -> dict[str, Any]:
+    """Compare current SHA-256 hashes and modes against the saved FIM baseline."""
+    current = collect_fim_snapshot()
+    if not FIM_BASELINE_FILE.is_file():
+        saved = save_fim_baseline(current)
+        return {
+            "total_tracked": len(current),
+            "baseline_timestamp": saved["timestamp"],
+            "changes_count": 0,
+            "changes": [],
+            "healthy": True,
+        }
+
+    try:
+        loaded = json.loads(FIM_BASELINE_FILE.read_text(encoding="utf-8"))
+        base_files: dict[str, dict[str, Any]] = loaded.get("files", {})
+        base_ts = str(loaded.get("timestamp", "Unknown"))
+    except Exception:
+        saved = save_fim_baseline(current)
+        return {
+            "total_tracked": len(current),
+            "baseline_timestamp": saved["timestamp"],
+            "changes_count": 0,
+            "changes": [],
+            "healthy": True,
+        }
+
+    home_str = str(Path.home())
+    changes: list[dict[str, Any]] = []
+
+    # Check modified or added files
+    for path_str, cur_meta in current.items():
+        short_path = path_str.replace(home_str, "~")
+        if path_str not in base_files:
+            changes.append(
+                {
+                    "path": short_path,
+                    "change_type": "ADDED",
+                    "severity": "warn",
+                    "detail": f"New file added to monitored path (sha256: {cur_meta['sha256'][:12]}…, mode {cur_meta['mode']})",
+                }
+            )
+            continue
+
+        old_meta = base_files[path_str]
+        if cur_meta["sha256"] != old_meta.get("sha256"):
+            is_sys = path_str.startswith(("/etc/", "/usr/"))
+            changes.append(
+                {
+                    "path": short_path,
+                    "change_type": "MODIFIED",
+                    "severity": "high" if is_sys else "warn",
+                    "detail": f"SHA-256 changed ({old_meta.get('sha256', '')[:10]}… → {cur_meta['sha256'][:10]}…)",
+                }
+            )
+        elif cur_meta["mode"] != old_meta.get("mode"):
+            changes.append(
+                {
+                    "path": short_path,
+                    "change_type": "PERMS",
+                    "severity": "warn",
+                    "detail": f"Permissions changed ({old_meta.get('mode')} → {cur_meta['mode']})",
+                }
+            )
+
+    # Check removed files
+    for path_str, old_meta in base_files.items():
+        if path_str not in current:
+            short_path = path_str.replace(home_str, "~")
+            changes.append(
+                {
+                    "path": short_path,
+                    "change_type": "REMOVED",
+                    "severity": "warn",
+                    "detail": f"Baselined file removed (was sha256: {old_meta.get('sha256', '')[:12]}…)",
+                }
+            )
+
+    return {
+        "total_tracked": len(current),
+        "baseline_timestamp": base_ts,
+        "changes_count": len(changes),
+        "changes": changes,
+        "healthy": len(changes) == 0,
+    }
+
+
+def check_malware_and_integrity(
+    baseline: dict[str, Any], use_helper: bool
+) -> dict[str, Any]:
+    """Scan persistence vectors, suspicious files/droppers, package integrity, and ClamAV status."""
+    home = Path.home()
+    persistence_checks: list[dict[str, Any]] = []
+    suspicious_files: list[dict[str, Any]] = []
+
+    # 1. /etc/ld.so.preload & LD_PRELOAD check
+    ld_preload_env = os.environ.get("LD_PRELOAD", "").strip()
+    ld_preload_file = Path("/etc/ld.so.preload")
+    ld_file_content = ""
+    if ld_preload_file.is_file():
+        try:
+            ld_file_content = ld_preload_file.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            pass
+    if ld_preload_env or ld_file_content:
+        persistence_checks.append(
+            {
+                "vector": "Dynamic Linker Preload (LD_PRELOAD)",
+                "location": "/etc/ld.so.preload",
+                "status": "danger",
+                "detail": f"Active preload library detected: {ld_preload_env or ld_file_content}",
+            }
+        )
+    else:
+        persistence_checks.append(
+            {
+                "vector": "Dynamic Linker Preload",
+                "location": "/etc/ld.so.preload",
+                "status": "ok",
+                "detail": "No LD_PRELOAD or /etc/ld.so.preload hooks present",
+            }
+        )
+
+    # 2. SSH authorized_keys & ~/.ssh permissions audit
+    ssh_dir = home / ".ssh"
+    auth_keys = ssh_dir / "authorized_keys"
+    if auth_keys.is_file():
+        try:
+            st_mode = auth_keys.stat().st_mode & 0o777
+            lines = [
+                ln.strip()
+                for ln in auth_keys.read_text(encoding="utf-8", errors="ignore").splitlines()
+                if ln.strip() and not ln.strip().startswith("#")
+            ]
+            bad_perms = (st_mode & 0o077) != 0
+            persistence_checks.append(
+                {
+                    "vector": "SSH Authorized Keys",
+                    "location": "~/.ssh/authorized_keys",
+                    "status": "warn" if bad_perms else "ok",
+                    "detail": (
+                        f"{len(lines)} key(s) configured (mode {oct(st_mode)})"
+                        + (" — permissions too open!" if bad_perms else "")
+                    ),
+                }
+            )
+        except Exception:
+            pass
+    else:
+        persistence_checks.append(
+            {
+                "vector": "SSH Authorized Keys",
+                "location": "~/.ssh/authorized_keys",
+                "status": "ok",
+                "detail": "No authorized_keys file present",
+            }
+        )
+
+    # 3. Shell startup profile inspection
+    shell_Suspicious_re = re.compile(
+        r"(curl\s+[^|]+\|\s*(ba)?sh|wget\s+[^|]+\|\s*(ba)?sh|base64\s+-d\s*\||/dev/tcp/|nc\s+-e|socat\s+.*exec|/tmp/\.[A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+    rc_files = [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]
+    rc_hits: list[str] = []
+    rc_checked = 0
+    for rc_name in rc_files:
+        rc_path = home / rc_name
+        if rc_path.is_file():
+            rc_checked += 1
+            try:
+                content = rc_path.read_text(encoding="utf-8", errors="ignore")
+                for line in content.splitlines():
+                    s_line = line.strip()
+                    if not s_line or s_line.startswith("#"):
+                        continue
+                    if shell_Suspicious_re.search(s_line):
+                        rc_hits.append(f"~/{rc_name}: {s_line[:80]}")
+            except Exception:
+                pass
+    if rc_hits:
+        persistence_checks.append(
+            {
+                "vector": "Shell Startup Profiles",
+                "location": "~/.bashrc, ~/.zshrc, ~/.profile",
+                "status": "danger",
+                "detail": f"Suspicious command in shell profile: {'; '.join(rc_hits)}",
+            }
+        )
+    else:
+        persistence_checks.append(
+            {
+                "vector": "Shell Startup Profiles",
+                "location": f"{rc_checked} profile file(s)",
+                "status": "ok",
+                "detail": "No pipe-to-shell, reverse shell, or temp-exec payloads found",
+            }
+        )
+
+    # 4. XDG Autostart & Hyprland autostart inspection
+    autostart_dir = home / ".config/autostart"
+    autostart_entries = list(autostart_dir.glob("*.desktop")) if autostart_dir.is_dir() else []
+    bad_autostart: list[str] = []
+    for desk in autostart_entries:
+        try:
+            txt = desk.read_text(encoding="utf-8", errors="ignore")
+            if any(p in txt for p in ("/tmp/", "/var/tmp/", "/dev/shm/", "curl ", "base64")):
+                bad_autostart.append(desk.name)
+        except Exception:
+            pass
+    persistence_checks.append(
+        {
+            "vector": "XDG & Desktop Autostart",
+            "location": "~/.config/autostart",
+            "status": "danger" if bad_autostart else "ok",
+            "detail": (
+                f"Suspicious autostart launcher(s): {', '.join(bad_autostart)}"
+                if bad_autostart
+                else f"{len(autostart_entries)} XDG autostart entry(s) clean"
+            ),
+        }
+    )
+
+    # 5. User Crontab check
+    if shutil.which("crontab"):
+        rc_cr, out_cr, _ = _run(["crontab", "-l"], timeout=3)
+        cron_lines = [
+            ln.strip()
+            for ln in (out_cr.splitlines() if rc_cr == 0 else [])
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        persistence_checks.append(
+            {
+                "vector": "User Crontab",
+                "location": "crontab -l",
+                "status": "warn" if cron_lines else "ok",
+                "detail": f"{len(cron_lines)} user cron job(s) active" if cron_lines else "No user cron jobs scheduled",
+            }
+        )
+
+    # 6. Heuristic scan of ~/Downloads, /tmp, /var/tmp, /dev/shm for hidden ELF binaries, droppers, miners
+    known_bad_names = {
+        "xmrig",
+        "minerd",
+        "kdevtmpfsi",
+        "kinsing",
+        "cryptonight",
+        "nanominer",
+        "nbminer",
+        "lolminer",
+        "redline",
+    }
+    disguised_re = re.compile(r"\.(pdf|doc|docx|xls|xlsx|jpg|png|txt|zip)\.(sh|py|pl|elf|bin|run)$", re.IGNORECASE)
+
+    scan_roots = [
+        (home / "Downloads", "Downloads"),
+        (Path("/tmp"), "/tmp"),
+        (Path("/var/tmp"), "/var/tmp"),
+        (Path("/dev/shm"), "/dev/shm"),
+        (home / ".local/bin", "~/.local/bin"),
+    ]
+
+    for root_path, label in scan_roots:
+        if not root_path.is_dir():
+            continue
+        try:
+            for dirpath, dirnames, filenames in os.walk(root_path):
+                # Limit recursion depth to 2 levels for speed
+                rel_depth = len(Path(dirpath).relative_to(root_path).parts)
+                if rel_depth >= 2:
+                    dirnames[:] = []
+                # Skip browser temporary profiles and known build dirs
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if not d.startswith(("systemd-private", ".org.chromium", "v8-compile-cache"))
+                ]
+                for fname in filenames[:200]:
+                    fpath = Path(dirpath) / fname
+                    try:
+                        st = fpath.lstat()
+                    except Exception:
+                        continue
+                    if not os.path.isfile(fpath) or os.path.islink(fpath):
+                        continue
+
+                    low_name = fname.lower()
+                    is_exec = bool(st.st_mode & 0o111)
+                    is_suid = bool(st.st_mode & 0o6000)
+
+                    # Check known miner/malware binary names
+                    if low_name in known_bad_names:
+                        suspicious_files.append(
+                            {
+                                "path": str(fpath),
+                                "category": "Known Miner / Malware Name",
+                                "severity": "high",
+                                "detail": f"Matches known malicious binary name '{fname}'",
+                            }
+                        )
+                        continue
+
+                    # Unexpected SUID/SGID in user/temp dirs
+                    if is_suid:
+                        suspicious_files.append(
+                            {
+                                "path": str(fpath),
+                                "category": "Unexpected SUID/SGID File",
+                                "severity": "high",
+                                "detail": f"Setuid/setgid bit set on file in {label} ({oct(st.st_mode & 0o7777)})",
+                            }
+                        )
+                        continue
+
+                    # Disguised double extension in Downloads/tmp
+                    if disguised_re.search(fname):
+                        suspicious_files.append(
+                            {
+                                "path": str(fpath),
+                                "category": "Disguised Executable",
+                                "severity": "high",
+                                "detail": "Double extension masquerading as document/media",
+                            }
+                        )
+                        continue
+
+                    # Hidden ELF binary in Downloads or temp dirs
+                    if (fname.startswith(".") or label in ("/tmp", "/var/tmp", "/dev/shm")) and is_exec:
+                        try:
+                            with fpath.open("rb") as bf:
+                                magic = bf.read(4)
+                            if magic == b"\x7fELF":
+                                suspicious_files.append(
+                                    {
+                                        "path": str(fpath),
+                                        "category": "Hidden / Temp ELF Binary",
+                                        "severity": "high" if fname.startswith(".") else "warn",
+                                        "detail": f"Executable ELF binary in {label} ({_human_bytes(st.st_size)})",
+                                    }
+                                )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    # 7. Core System Package Integrity (pacman -Qk)
+    core_pkgs = [
+        "sudo",
+        "openssh",
+        "systemd",
+        "glibc",
+        "pambase",
+        "polkit",
+        "shadow",
+        "hyprland",
+        "omarchy",
+    ]
+    rc_qk, out_qk, err_qk = _run(["pacman", "-Qk", *core_pkgs], timeout=6)
+    integrity_issues: list[str] = []
+    verified_pkgs = 0
+    for line in (out_qk + "\n" + err_qk).splitlines():
+        line_s = line.strip()
+        if not line_s:
+            continue
+        if "0 missing files" in line_s:
+            verified_pkgs += 1
+        elif "missing file" in line_s and not line_s.startswith("warning:"):
+            integrity_issues.append(line_s)
+
+    # 8. Unmerged .pacnew / .pacsave files in /etc
+    pacnew_files: list[str] = []
+    if use_helper:
+        rc_pn, out_pn, _ = _run(["sudo", "-n", str(HELPER_BIN), "pacnew-list"], timeout=5)
+        if rc_pn == 0 and out_pn.strip():
+            pacnew_files = [ln.strip() for ln in out_pn.splitlines() if ln.strip()]
+    else:
+        rc_pn, out_pn, _ = _run(
+            ["find", "/etc", "-maxdepth", "2", "(", "-name", "*.pacnew", "-o", "-name", "*.pacsave", ")"],
+            timeout=5,
+        )
+        if out_pn.strip():
+            pacnew_files = [ln.strip() for ln in out_pn.splitlines() if ln.strip()]
+
+    # 9. ClamAV on-demand scanner status & latest deep scan report
+    clamscan_bin = shutil.which("clamscan")
+    clamav_installed = bool(clamscan_bin)
+    clam_db_dir = Path("/var/lib/clamav")
+    db_files = (
+        list(clam_db_dir.glob("*.cvd")) + list(clam_db_dir.glob("*.cld"))
+        if clam_db_dir.is_dir()
+        else []
+    )
+    db_updated = "Not initialized"
+    if db_files:
+        newest_mtime = max(f.stat().st_mtime for f in db_files)
+        db_updated = dt.datetime.fromtimestamp(newest_mtime).strftime("%Y-%m-%d %H:%M")
+
+    last_clam_scan: dict[str, Any] | None = None
+    if CLAMAV_REPORT_FILE.is_file():
+        try:
+            last_clam_scan = json.loads(CLAMAV_REPORT_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            last_clam_scan = None
+
+    persistence_alerts = sum(1 for c in persistence_checks if c["status"] in ("warn", "danger"))
+    clam_infected = int((last_clam_scan or {}).get("infected_count", 0) or 0)
+    fim_status = check_fim_baseline()
+    threat_alerts_count = (
+        persistence_alerts
+        + len(suspicious_files)
+        + len(integrity_issues)
+        + clam_infected
+        + fim_status["changes_count"]
+    )
+
+    return {
+        "threat_alerts_count": threat_alerts_count,
+        "persistence_checks": persistence_checks,
+        "suspicious_files": suspicious_files,
+        "package_integrity": {
+            "verified_packages": verified_pkgs,
+            "total_checked": len(core_pkgs),
+            "issues": integrity_issues,
+            "healthy": len(integrity_issues) == 0,
+        },
+        "fim": fim_status,
+        "pacnew_files": pacnew_files,
+        "pacnew_count": len(pacnew_files),
+        "clamav": {
+            "installed": clamav_installed,
+            "db_ready": len(db_files) > 0,
+            "db_updated": db_updated,
+            "daemon_running": False,
+            "last_scan": last_clam_scan,
+        },
+    }
+
+
+def run_clamav_scan() -> dict[str, Any]:
+    """Run an on-demand, low-priority ClamAV scan on high-risk user and temp directories."""
+    if not shutil.which("clamscan"):
+        return {
+            "ok": False,
+            "message": "ClamAV (clamscan) is not installed.",
+        }
+
+    home = Path.home()
+    targets = [
+        str(p)
+        for p in (
+            home / "Downloads",
+            home / ".local/bin",
+            home / ".config/autostart",
+            Path("/tmp"),
+            Path("/var/tmp"),
+            Path("/dev/shm"),
+        )
+        if p.exists()
+    ]
+
+    start_ts = time.time()
+    cmd = [
+        "nice",
+        "-n",
+        "19",
+        "ionice",
+        "-c",
+        "3",
+        "clamscan",
+        "--recursive",
+        "--infected",
+        "--no-summary",
+        "--max-filesize=100M",
+        "--max-scansize=250M",
+        "--exclude-dir=^/tmp/systemd-private",
+        "--exclude-dir=^/var/tmp/systemd-private",
+        "--exclude-dir=^/tmp/\\.org\\.chromium",
+        *targets,
+    ]
+    rc, out, err = _run(cmd, timeout=300)
+    duration_sec = round(time.time() - start_ts, 1)
+
+    infected_lines = [
+        ln.strip() for ln in out.splitlines() if ln.strip().endswith("FOUND")
+    ]
+    now_str = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+    scan_record = {
+        "timestamp": now_str,
+        "duration_sec": duration_sec,
+        "targets": [t.replace(str(home), "~") for t in targets],
+        "infected_count": len(infected_lines),
+        "infected_files": infected_lines,
+        "return_code": rc,
+    }
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    CLAMAV_REPORT_FILE.write_text(json.dumps(scan_record, indent=2), encoding="utf-8")
+    return {
+        "ok": rc in (0, 1, 2) and rc != 124,
+        "scan": scan_record,
+    }
+
+
+def check_cleanup_and_storage(use_helper: bool) -> dict[str, Any]:
+    """Inspect reclaimable package caches, user caches, Trash, coredumps, journals, orphans, and Btrfs health."""
+    home = Path.home()
+
+    # 1. Pacman cache reclaimable bytes via paccache -dvk2 & -dvuk0
+    paccache_reclaim_bytes = 0
+    paccache_pkg_dir = Path("/var/cache/pacman/pkg")
+    paccache_total_bytes = _dir_size_bytes(paccache_pkg_dir)
+    for flag in ("-dvk2", "-dvuk0"):
+        rc_pcv, out_pcv, _ = _run(["paccache", flag], timeout=10)
+        if rc_pcv == 0 and out_pcv:
+            for raw_ln in out_pcv.splitlines():
+                ln = raw_ln.strip()
+                if not ln or ln.startswith("==>"):
+                    continue
+                cand_path = Path(ln) if ln.startswith("/") else (paccache_pkg_dir / ln)
+                try:
+                    if cand_path.is_file():
+                        paccache_reclaim_bytes += cand_path.stat().st_size
+                except Exception:
+                    pass
+
+    # 2. AUR cache (~/.cache/yay + ~/.cache/paru)
+    yay_cache_bytes = _dir_size_bytes(home / ".cache/yay") + _dir_size_bytes(
+        home / ".cache/paru"
+    )
+
+    # 3. User ~/.cache breakdown & safe-to-clean caches
+    cache_root = home / ".cache"
+    user_cache_total_bytes = _dir_size_bytes(cache_root)
+    safe_cache_names = {
+        "thumbnails",
+        "mesa_shader_cache",
+        "mesa_shader_cache_db",
+        "nvidia",
+        "pip",
+        "uv",
+        "go-build",
+        "npm",
+        "yarn",
+        "pnpm",
+        "fontconfig",
+        "yay",
+        "paru",
+        "wine",
+        "winetricks",
+    }
+    user_cache_breakdown: list[dict[str, Any]] = []
+    safe_user_cache_bytes = 0
+    if cache_root.is_dir():
+        try:
+            for child in cache_root.iterdir():
+                if not child.is_dir() or child.is_symlink():
+                    continue
+                sz = _dir_size_bytes(child)
+                if sz <= 0:
+                    continue
+                is_safe = child.name in safe_cache_names
+                if is_safe:
+                    safe_user_cache_bytes += sz
+                user_cache_breakdown.append(
+                    {
+                        "name": child.name,
+                        "path": f"~/.cache/{child.name}",
+                        "bytes": sz,
+                        "human": _human_bytes(sz),
+                        "safe_clean": is_safe,
+                    }
+                )
+        except Exception:
+            pass
+    user_cache_breakdown.sort(key=lambda x: x["bytes"], reverse=True)
+
+    # 4. Trash (~/.local/share/Trash) & Systemd Core Dumps (/var/lib/systemd/coredump)
+    trash_bytes = _dir_size_bytes(home / ".local/share/Trash")
+    coredump_dir = Path("/var/lib/systemd/coredump")
+    coredump_bytes = _dir_size_bytes(coredump_dir)
+    coredump_count = (
+        len(list(coredump_dir.glob("core.*"))) if coredump_dir.is_dir() else 0
+    )
+
+    # 5. Systemd journal usage
     journal_bytes = _dir_size_bytes(Path("/var/log/journal"))
 
-    # 4. Orphan packages (pacman -Qdtq)
+    # 6. Orphan packages (pacman -Qdtq)
     orphans: list[str] = []
     rc_or, out_or, _ = _run(["pacman", "-Qdtq"], timeout=5)
     if rc_or == 0 and out_or.strip():
         orphans = [p.strip() for p in out_or.splitlines() if p.strip()]
 
-    # 5. Root filesystem & Btrfs health
+    # 7. Root filesystem & Btrfs health
     usage = shutil.disk_usage("/")
     disk_pct = round((usage.used / usage.total) * 100, 1) if usage.total else 0.0
 
@@ -841,7 +1479,7 @@ def check_cleanup_and_storage(use_helper: bool) -> dict[str, Any]:
     else:
         btrfs_status = "Btrfs Mounted (/dev/mapper/root)"
 
-    # 6. Top directories in $HOME (fast 1-level scan)
+    # 8. Top directories in $HOME (fast 1-level scan)
     home_breakdown: list[dict[str, Any]] = []
     candidates = [
         home / ".cache",
@@ -863,7 +1501,9 @@ def check_cleanup_and_storage(use_helper: bool) -> dict[str, Any]:
             )
     home_breakdown.sort(key=lambda x: x["bytes"], reverse=True)
 
-    reclaimable_total = paccache_reclaim_bytes + yay_cache_bytes
+    reclaimable_total = (
+        paccache_reclaim_bytes + safe_user_cache_bytes + trash_bytes + coredump_bytes
+    )
 
     return {
         "disk": {
@@ -886,6 +1526,16 @@ def check_cleanup_and_storage(use_helper: bool) -> dict[str, Any]:
             "paccache_reclaim_human": _human_bytes(paccache_reclaim_bytes),
             "yay_cache_bytes": yay_cache_bytes,
             "yay_cache_human": _human_bytes(yay_cache_bytes),
+            "user_cache_total_bytes": user_cache_total_bytes,
+            "user_cache_total_human": _human_bytes(user_cache_total_bytes),
+            "safe_user_cache_bytes": safe_user_cache_bytes,
+            "safe_user_cache_human": _human_bytes(safe_user_cache_bytes),
+            "user_cache_breakdown": user_cache_breakdown[:8],
+            "trash_bytes": trash_bytes,
+            "trash_human": _human_bytes(trash_bytes),
+            "coredump_bytes": coredump_bytes,
+            "coredump_human": _human_bytes(coredump_bytes),
+            "coredump_count": coredump_count,
             "journal_bytes": journal_bytes,
             "journal_human": _human_bytes(journal_bytes),
             "orphans": orphans,
@@ -903,6 +1553,7 @@ def compute_health_score(
     network: dict[str, Any],
     daemons: dict[str, Any],
     storage: dict[str, Any],
+    threats: dict[str, Any] | None = None,
 ) -> tuple[int, str, list[str]]:
     """Compute a 0-100 health score and list actionable findings."""
     score = 100
@@ -953,6 +1604,37 @@ def compute_health_score(
             f"{len(daemons['new_enabled_services'])} newly enabled systemd service(s) since baseline."
         )
 
+    if threats:
+        if threats.get("suspicious_files"):
+            score -= min(30, len(threats["suspicious_files"]) * 15)
+            findings.append(
+                f"{len(threats['suspicious_files'])} suspicious executable/file(s) detected in temp or user folders."
+            )
+        pers_bad = sum(
+            1 for c in threats.get("persistence_checks", []) if c["status"] == "danger"
+        )
+        if pers_bad > 0:
+            score -= 30
+            findings.append(f"{pers_bad} high-risk persistence/preload hook(s) flagged!")
+        if not threats.get("package_integrity", {}).get("healthy", True):
+            score -= 20
+            findings.append("Core system package integrity check reported missing/altered files.")
+        clam_inf = int(((threats.get("clamav") or {}).get("last_scan") or {}).get("infected_count", 0) or 0)
+        if clam_inf > 0:
+            score -= 40
+            findings.append(f"ClamAV reported {clam_inf} infected file(s) in last deep scan!")
+        if threats.get("pacnew_count", 0) > 0:
+            score -= 3
+            findings.append(
+                f"{threats['pacnew_count']} unmerged .pacnew/.pacsave config file(s) in /etc."
+            )
+        fim_changes = int((threats.get("fim") or {}).get("changes_count", 0) or 0)
+        if fim_changes > 0:
+            score -= min(20, fim_changes * 5)
+            findings.append(
+                f"{fim_changes} file(s) changed since SHA-256 FIM baseline (review or re-baseline in Threat Scan)."
+            )
+
     if storage["disk"]["percent"] >= 90:
         score -= 20
         findings.append(f"Root filesystem is {storage['disk']['percent']}% full.")
@@ -969,7 +1651,7 @@ def compute_health_score(
         status_label = "Action Required"
 
     if not findings:
-        findings.append("All system, package, daemon, and network checks passed.")
+        findings.append("All system, package, daemon, integrity, and network checks passed.")
 
     return score, status_label, findings
 
@@ -986,10 +1668,11 @@ def run_full_scan() -> dict[str, Any]:
     updates = check_updates(baseline)
     network = check_network_and_connections(baseline, has_helper)
     daemons = check_processes_and_daemons(baseline, has_helper)
+    threats = check_malware_and_integrity(baseline, has_helper)
     storage = check_cleanup_and_storage(has_helper)
 
     score, status_label, findings = compute_health_score(
-        overview, updates, network, daemons, storage
+        overview, updates, network, daemons, storage, threats
     )
 
     now_iso = dt.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1006,6 +1689,7 @@ def run_full_scan() -> dict[str, Any]:
         "updates": updates,
         "network": network,
         "daemons": daemons,
+        "threats": threats,
         "storage": storage,
     }
 
@@ -1018,6 +1702,7 @@ def run_full_scan() -> dict[str, Any]:
         "updates": updates["total_count"],
         "unapproved_listeners": network["unapproved_listeners_count"],
         "failed_units": daemons["unmuted_failed_count"],
+        "threat_alerts": threats["threat_alerts_count"],
         "disk_pct": storage["disk"]["percent"],
     }
     with HISTORY_FILE.open("a", encoding="utf-8") as hf:
@@ -1027,13 +1712,16 @@ def run_full_scan() -> dict[str, Any]:
 
 
 def get_latest_or_scan() -> dict[str, Any]:
-    """Return cached report if recent, otherwise run a scan."""
+    """Return cached report if recent and schema-complete, otherwise run a scan."""
     if REPORT_FILE.is_file():
         try:
             data = json.loads(REPORT_FILE.read_text(encoding="utf-8"))
-            # Refresh helper_active flag dynamically
-            data["helper_active"] = helper_available()
-            return data
+            if (
+                "fim" in data.get("threats", {})
+                and "user_cache_breakdown" in data.get("storage", {}).get("cleanup", {})
+            ):
+                data["helper_active"] = helper_available()
+                return data
         except Exception:
             pass
     return run_full_scan()

@@ -39,11 +39,22 @@ case "$cmd" in
     exec /usr/bin/btrfs device stats /
     ;;
   clean-paccache)
+    rm -rf /var/cache/pacman/pkg/download-* 2>/dev/null || true
     /usr/bin/paccache -rk2
     /usr/bin/paccache -ruk0
     ;;
   vacuum-journal)
     exec /usr/bin/journalctl --vacuum-time=14d
+    ;;
+  clean-coredumps)
+    rm -f /var/lib/systemd/coredump/core.* 2>/dev/null || true
+    echo "ok"
+    ;;
+  freshclam-update)
+    exec /usr/bin/freshclam
+    ;;
+  pacnew-list)
+    exec /usr/bin/find /etc \( -name '*.pacnew' -o -name '*.pacsave' \) -print 2>/dev/null
     ;;
   *)
     echo "omarchy-pulse-helper: invalid subcommand '$cmd'" >&2

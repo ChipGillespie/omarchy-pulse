@@ -16,8 +16,10 @@ from .scanner import (
     _run,
     helper_available,
     load_baseline,
+    run_clamav_scan,
     run_full_scan,
     save_baseline,
+    save_fim_baseline,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -205,19 +207,138 @@ def handle_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     if action == "clean-aur-cache":
-        yay_dir = Path.home() / ".cache/yay"
-        if yay_dir.is_dir():
-            for child in yay_dir.iterdir():
-                try:
-                    if child.is_dir():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-                except Exception:
-                    pass
+        for cache_sub in (".cache/yay", ".cache/paru"):
+            c_dir = Path.home() / cache_sub
+            if c_dir.is_dir():
+                for child in c_dir.iterdir():
+                    try:
+                        if child.is_dir():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                    except Exception:
+                        pass
         return {
             "ok": True,
-            "message": "Cleared ~/.cache/yay build cache.",
+            "message": "Cleared ~/.cache/yay and ~/.cache/paru build caches.",
+            "report": run_full_scan(),
+        }
+
+    if action == "clean-safe-user-cache":
+        safe_cache_names = {
+            "thumbnails",
+            "mesa_shader_cache",
+            "mesa_shader_cache_db",
+            "nvidia",
+            "pip",
+            "uv",
+            "go-build",
+            "npm",
+            "yarn",
+            "pnpm",
+            "yay",
+            "paru",
+        }
+        cache_root = Path.home() / ".cache"
+        cleaned_count = 0
+        if cache_root.is_dir():
+            for name in safe_cache_names:
+                target_dir = cache_root / name
+                if target_dir.is_dir() and not target_dir.is_symlink():
+                    try:
+                        shutil.rmtree(target_dir)
+                        cleaned_count += 1
+                    except Exception:
+                        pass
+        return {
+            "ok": True,
+            "message": f"Cleaned {cleaned_count} safe build, shader, and thumbnail cache directory(s).",
+            "report": run_full_scan(),
+        }
+
+    if action == "empty-trash":
+        trash_dir = Path.home() / ".local/share/Trash"
+        if trash_dir.is_dir():
+            for sub in ("files", "info", "expunged"):
+                sub_p = trash_dir / sub
+                if sub_p.is_dir():
+                    for item in sub_p.iterdir():
+                        try:
+                            if item.is_dir() and not item.is_symlink():
+                                shutil.rmtree(item)
+                            else:
+                                item.unlink()
+                        except Exception:
+                            pass
+        return {
+            "ok": True,
+            "message": "Emptied ~/.local/share/Trash.",
+            "report": run_full_scan(),
+        }
+
+    if action == "clean-coredumps":
+        if helper_available():
+            rc, out, err = _run(
+                ["sudo", "-n", str(HELPER_BIN), "clean-coredumps"], timeout=15
+            )
+            if rc == 0:
+                return {
+                    "ok": True,
+                    "message": "Cleared old systemd core dumps (/var/lib/systemd/coredump).",
+                    "report": run_full_scan(),
+                }
+        _launch_floating_terminal("sudo rm -vf /var/lib/systemd/coredump/core.*")
+        return {
+            "ok": True,
+            "message": "Opened terminal to clear systemd core dumps.",
+            "report": run_full_scan(),
+        }
+
+    if action == "approve-fim-baseline":
+        saved = save_fim_baseline()
+        count = len(saved.get("files", {}))
+        return {
+            "ok": True,
+            "message": f"Updated SHA-256 FIM baseline ({count} critical files hashed).",
+            "report": run_full_scan(),
+        }
+
+    if action == "run-clamav-scan":
+        clam_res = run_clamav_scan()
+        if not clam_res.get("ok"):
+            return {
+                "ok": False,
+                "message": clam_res.get("message", "ClamAV scan failed."),
+                "report": run_full_scan(),
+            }
+        scan_info = clam_res["scan"]
+        inf = scan_info.get("infected_count", 0)
+        msg = (
+            f"ClamAV scan clean: 0 threats found in {scan_info['duration_sec']}s."
+            if inf == 0
+            else f"WARNING: ClamAV detected {inf} infected file(s)!"
+        )
+        return {
+            "ok": True,
+            "message": msg,
+            "report": run_full_scan(),
+        }
+
+    if action == "update-clamav-db":
+        if helper_available():
+            rc, out, err = _run(
+                ["sudo", "-n", str(HELPER_BIN), "freshclam-update"], timeout=90
+            )
+            if rc == 0:
+                return {
+                    "ok": True,
+                    "message": "Updated ClamAV virus signature database (freshclam).",
+                    "report": run_full_scan(),
+                }
+        _launch_floating_terminal("sudo freshclam")
+        return {
+            "ok": True,
+            "message": "Launched freshclam signature update in floating terminal.",
             "report": run_full_scan(),
         }
 

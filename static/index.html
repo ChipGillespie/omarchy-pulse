@@ -44,6 +44,11 @@
           <span class="nav-label">Daemons &amp; Security</span>
           <span class="nav-badge" id="badge-daemons"></span>
         </button>
+        <button class="nav-item" data-tab="threats">
+          <span class="nav-icon">󰒃</span>
+          <span class="nav-label">Threat &amp; Malware Scan</span>
+          <span class="nav-badge" id="badge-threats"></span>
+        </button>
         <button class="nav-item" data-tab="storage">
           <span class="nav-icon">󰋊</span>
           <span class="nav-label">Cache &amp; Storage</span>
@@ -470,12 +475,120 @@
         </div>
       </section>
 
+      <!-- TAB 4.5: THREAT & MALWARE SCAN -->
+      <section id="tab-threats" class="tab-panel">
+        <div class="panel-card highlight-card">
+          <div class="split-header">
+            <div>
+              <h2>On-Demand Deep Malware &amp; Trojan Scanner (ClamAV)</h2>
+              <p class="text-muted" id="th-clam-sub">Zero background daemons (0 MB idle RAM). Scans ~/Downloads, ~/.local/bin, ~/.config/autostart, /tmp, /var/tmp, and /dev/shm on demand at lowest CPU/IO priority.</p>
+            </div>
+            <div class="action-row">
+              <button id="btn-clam-scan" class="btn btn-primary">
+                <span>󰒃</span> Run Deep ClamAV Scan
+              </button>
+              <button id="btn-clam-update" class="btn btn-secondary">
+                Update Virus DB (freshclam)
+              </button>
+              <button id="btn-fim-rebaseline" class="btn btn-outline">
+                Re-Baseline FIM (SHA-256)
+              </button>
+            </div>
+          </div>
+          <div id="th-clam-banner" class="alert-box ok-box"></div>
+        </div>
+
+        <div class="grid-4">
+          <div class="panel-card">
+            <div class="metric-top">
+              <span class="metric-title">SHA-256 File Integrity (FIM)</span>
+              <span id="th-fim-pill" class="pill">--</span>
+            </div>
+            <div class="metric-val" id="th-fim-val">--</div>
+            <div class="metric-sub" id="th-fim-sub">/etc, PAM, SSH, /usr/local, ~/.local/bin, Hyprland</div>
+          </div>
+
+          <div class="panel-card">
+            <div class="metric-top">
+              <span class="metric-title">Persistence &amp; Preload Hooks</span>
+              <span id="th-pers-pill" class="pill">--</span>
+            </div>
+            <div class="metric-val" id="th-pers-val">--</div>
+            <div class="metric-sub" id="th-pers-sub">LD_PRELOAD, SSH keys, shell rc, autostart, cron</div>
+          </div>
+
+          <div class="panel-card">
+            <div class="metric-top">
+              <span class="metric-title">Core Package Integrity</span>
+              <span id="th-pkg-pill" class="pill">--</span>
+            </div>
+            <div class="metric-val" id="th-pkg-val">--</div>
+            <div class="metric-sub" id="th-pkg-sub">pacman -Qk &amp; /etc/*.pacnew config drift</div>
+          </div>
+
+          <div class="panel-card">
+            <div class="metric-top">
+              <span class="metric-title">Dropper &amp; File Heuristics</span>
+              <span id="th-file-pill" class="pill">--</span>
+            </div>
+            <div class="metric-val" id="th-file-val">--</div>
+            <div class="metric-sub" id="th-file-sub">Hidden ELF binaries, SUIDs, disguised scripts</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Persistence &amp; Startup Vector Audit</h2>
+                <p class="text-muted">Inspects common non-root hijack and persistence locations on every scan.</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Vector</th>
+                    <th>Location</th>
+                    <th>Status</th>
+                    <th>Assessment</th>
+                  </tr>
+                </thead>
+                <tbody id="th-pers-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-header">
+              <div>
+                <h2>Suspicious File &amp; Integrity Findings</h2>
+                <p class="text-muted">Flags hidden ELF executables in temp/Downloads, SUID files, or altered system packages.</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Category</th>
+                    <th>Path / Target</th>
+                    <th>Severity</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody id="th-files-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- TAB 5: CACHE & STORAGE -->
       <section id="tab-storage" class="tab-panel">
         <div class="grid-2">
           <div class="panel-card">
             <div class="panel-header">
-              <h2>System Cache &amp; Orphan Cleanup</h2>
+              <h2>System Junk, Cache &amp; Orphan Cleanup</h2>
               <span class="pill" id="st-reclaim-pill">-- Reclaimable</span>
             </div>
             <div class="cleanup-list">
@@ -489,10 +602,34 @@
 
               <div class="cleanup-row">
                 <div>
-                  <div class="cleanup-title">AUR Build Cache (~/.cache/yay)</div>
+                  <div class="cleanup-title">Safe Build, Shader &amp; Thumbnail Caches (~/.cache)</div>
+                  <div class="cleanup-sub" id="st-safecache-sub">--</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" data-action="clean-safe-user-cache">Clean Safe Caches</button>
+              </div>
+
+              <div class="cleanup-row">
+                <div>
+                  <div class="cleanup-title">AUR Build Cache (~/.cache/yay &amp; paru)</div>
                   <div class="cleanup-sub" id="st-yay-sub">--</div>
                 </div>
                 <button class="btn btn-secondary btn-sm" data-action="clean-aur-cache">Clear Cache</button>
+              </div>
+
+              <div class="cleanup-row">
+                <div>
+                  <div class="cleanup-title">User Trash (~/.local/share/Trash)</div>
+                  <div class="cleanup-sub" id="st-trash-sub">--</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" data-action="empty-trash">Empty Trash</button>
+              </div>
+
+              <div class="cleanup-row">
+                <div>
+                  <div class="cleanup-title">Systemd Core Dumps (/var/lib/systemd/coredump)</div>
+                  <div class="cleanup-sub" id="st-coredump-sub">--</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" data-action="clean-coredumps">Clear Core Dumps</button>
               </div>
 
               <div class="cleanup-row">
@@ -519,6 +656,9 @@
               <span class="pill pill-ok" id="st-btrfs-pill">--</span>
             </div>
             <div id="st-home-bars" class="storage-bars"></div>
+
+            <h3 class="sub-heading" style="margin-top:20px">Top ~/.cache Consumers (<span id="st-usercache-total">--</span>)</h3>
+            <div id="st-cache-bars" class="storage-bars"></div>
           </div>
         </div>
       </section>

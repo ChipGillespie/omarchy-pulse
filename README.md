@@ -27,6 +27,16 @@ A local-first, zero-dependency system health, package update, live `btop`-style 
   - Automatically trusts Loopback (`127.0.0.0/8`, `::1`), Tailscale (`tailscale0`, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, WireGuard `:41641`), and mDNS (`:5353`).
   - Flags unapproved wildcard/LAN listening ports (`ss -tulnp`) and unexpected external connections (`ss -tunp`) with one-click baseline approval.
   - Audits `/proc` for binaries running from temporary directories (`/tmp`, `/dev/shm`, `/var/tmp`) or deleted paths, tracks `systemctl --failed` (with one-click muting for known hardware/TPM quirks), and monitors newly enabled systemd services.
+- **Threat, Malware & Persistence Integrity Scanner:**
+  - **SHA-256 File Integrity Monitor (FIM):** Tracks SHA-256 cryptographic hashes and file permissions (~8 ms scan) across `/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/ssh/sshd_config*`, `/etc/pam.d/*`, `/usr/local/{bin,sbin,libexec}`, `~/.local/bin`, `~/.ssh/*`, shell startup profiles, and `~/.config/{hypr,autostart,systemd/user}` with one-click baseline approval.
+  - **Persistence & Hijack Audit:** Inspects `/etc/ld.so.preload` & `LD_PRELOAD`, `~/.ssh/authorized_keys` permissions, shell startup profiles (`~/.bashrc`, `~/.zshrc`, `~/.profile`), `~/.config/autostart/*.desktop`, and user crontabs.
+  - **Dropper & File Heuristics:** Scans `~/Downloads`, `/tmp`, `/var/tmp`, `/dev/shm`, and `~/.local/bin` for hidden ELF binaries, unexpected SUID/SGID files, disguised double-extension scripts, and known cryptominer/malware names.
+  - **Core Package Integrity & Config Drift:** Verifies core packages (`sudo`, `openssh`, `systemd`, `glibc`, `pambase`, `polkit`, `shadow`, `hyprland`, `omarchy`) via `pacman -Qk` and detects unmerged `/etc/*.pacnew` files.
+  - **On-Demand Deep Malware Scan (ClamAV):** Runs `clamscan` strictly on-demand at lowest CPU/IO priority (`nice -n 19 ionice -c 3`) with `clamav-daemon` and `clamav-freshclam` disabled (0 MB idle RAM).
+- **CleanMyMac-Style System Junk & Cache Cleaner:**
+  - Prunes Pacman package cache (`paccache -rk2` & `-ruk0` + stale `download-*` folders), safe `~/.cache` build/shader/thumbnail directories, AUR caches (`yay` & `paru`), `~/.local/share/Trash`, systemd core dumps (`/var/lib/systemd/coredump`), systemd journals, and orphaned packages.
+- **Omarchy Bar Widget (`chip.pulse`) & Keybinding (`SUPER + H`):**
+  - Launches directly via `SUPER + H` or the `chip.pulse` bar icon next to the clock (`centerBegin`), which live-watches `latest_report.json` with zero polling overhead.
 - **Weekly Automated `systemd --user` Timer:**
   - Runs `omarchy-pulse.timer` weekly in the background, saves the latest report to `~/.local/state/omarchy-pulse/latest_report.json`, and sends a desktop notification (`notify-send`).
 

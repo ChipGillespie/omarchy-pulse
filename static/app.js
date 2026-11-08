@@ -287,6 +287,21 @@ function renderReport(r) {
   bDm.textContent = dmAlerts > 0 ? dmAlerts : "";
   bDm.className = `nav-badge ${dmAlerts > 0 ? "warn" : ""}`;
 
+  const th = r.threats || {
+    threat_alerts_count: 0,
+    persistence_checks: [],
+    suspicious_files: [],
+    package_integrity: { verified_packages: 0, total_checked: 0, issues: [], healthy: true },
+    pacnew_files: [],
+    pacnew_count: 0,
+    clamav: { installed: false, db_ready: false, db_updated: "N/A", last_scan: null },
+  };
+  const bTh = document.getElementById("badge-threats");
+  if (bTh) {
+    bTh.textContent = th.threat_alerts_count > 0 ? th.threat_alerts_count : "";
+    bTh.className = `nav-badge ${th.threat_alerts_count > 0 ? "warn" : ""}`;
+  }
+
   // Overview cards
   document.getElementById("ov-updates-val").textContent =
     up.deferred.active ? `${up.total_count} (Deferred)` : `${up.total_count} Packages`;
@@ -513,13 +528,172 @@ function renderReport(r) {
       .join("");
   }
 
+  // TAB 4.5: THREAT & MALWARE SCAN
+  const clamBanner = document.getElementById("th-clam-banner");
+  if (clamBanner) {
+    const clam = th.clamav || {};
+    if (!clam.installed) {
+      clamBanner.className = "alert-box";
+      clamBanner.innerHTML = `<strong>ClamAV Not Installed:</strong> Heuristic &amp; persistence checks are active. Install <code>clamav</code> for on-demand signature scans.`;
+    } else if (!clam.last_scan) {
+      clamBanner.className = "alert-box ok-box";
+      clamBanner.innerHTML = `<strong>ClamAV On-Demand Engine Ready:</strong> Signatures updated <strong>${esc(clam.db_updated)}</strong> • Background daemon disabled (0 MB idle RAM) • Click <em>Run Deep ClamAV Scan</em> to scan user &amp; temp folders.`;
+    } else {
+      const ls = clam.last_scan;
+      const inf = Number(ls.infected_count || 0);
+      clamBanner.className = `alert-box ${inf === 0 ? "ok-box" : ""}`;
+      clamBanner.innerHTML = `<strong>Last Deep Scan (${esc(ls.timestamp)}):</strong> ${
+        inf === 0
+          ? `Clean — 0 infected files across ${(ls.targets || []).map(esc).join(", ")} (${ls.duration_sec}s)`
+          : `WARNING: ${inf} infected file(s) detected!`
+      } • Signatures: ${esc(clam.db_updated)}`;
+    }
+  }
+
+  const persChecks = th.persistence_checks || [];
+  const persBad = persChecks.filter((c) => c.status !== "ok").length;
+  const persPill = document.getElementById("th-pers-pill");
+  if (persPill) {
+    persPill.textContent = persBad === 0 ? "Clean" : `${persBad} Flagged`;
+    persPill.className = `pill ${persBad === 0 ? "pill-ok" : "pill-danger"}`;
+    document.getElementById("th-pers-val").textContent = `${persChecks.length - persBad}/${persChecks.length} Vectors Clean`;
+  }
+
+  const fim = th.fim || { total_tracked: 0, baseline_timestamp: "--", changes_count: 0, changes: [], healthy: true };
+  const fimPill = document.getElementById("th-fim-pill");
+  if (fimPill) {
+    fimPill.textContent = fim.healthy ? "Baseline OK" : `${fim.changes_count} Changed`;
+    fimPill.className = `pill ${fim.healthy ? "pill-ok" : "pill-warn"}`;
+    document.getElementById("th-fim-val").textContent =
+      fim.healthy ? `${fim.total_tracked} Files Verified` : `${fim.changes_count} Drift Detected`;
+    document.getElementById("th-fim-sub").textContent = `Baselined: ${fim.baseline_timestamp}`;
+  }
+
+  const pkgInt = th.package_integrity || { verified_packages: 0, total_checked: 0, issues: [], healthy: true };
+  const pkgPill = document.getElementById("th-pkg-pill");
+  if (pkgPill) {
+    const pkgOk = pkgInt.healthy && (th.pacnew_count || 0) === 0;
+    pkgPill.textContent = pkgOk ? "Verified" : "Review";
+    pkgPill.className = `pill ${pkgInt.healthy ? ((th.pacnew_count || 0) === 0 ? "pill-ok" : "pill-warn") : "pill-danger"}`;
+    document.getElementById("th-pkg-val").textContent = `${pkgInt.verified_packages}/${pkgInt.total_checked} Core Pkgs OK`;
+    document.getElementById("th-pkg-sub").textContent =
+      (th.pacnew_count || 0) === 0
+        ? "0 unmerged .pacnew/.pacsave files in /etc"
+        : `${th.pacnew_count} unmerged .pacnew/.pacsave file(s) in /etc`;
+  }
+
+  const suspFiles = th.suspicious_files || [];
+  const filePill = document.getElementById("th-file-pill");
+  if (filePill) {
+    filePill.textContent = suspFiles.length === 0 ? "0 Threats" : `${suspFiles.length} Flagged`;
+    filePill.className = `pill ${suspFiles.length === 0 ? "pill-ok" : "pill-danger"}`;
+    document.getElementById("th-file-val").textContent =
+      suspFiles.length === 0 ? "All Clean" : `${suspFiles.length} Suspicious File(s)`;
+  }
+
+  const persBody = document.getElementById("th-pers-body");
+  if (persBody) {
+    persBody.innerHTML = persChecks
+      .map((c) => {
+        const cls = c.status === "ok" ? "pill-ok" : c.status === "warn" ? "pill-warn" : "pill-danger";
+        const lbl = c.status === "ok" ? "Clean" : c.status === "warn" ? "Review" : "Alert";
+        return `
+          <tr>
+            <td><strong>${esc(c.vector)}</strong></td>
+            <td class="text-muted">${esc(c.location)}</td>
+            <td><span class="pill ${cls}">${lbl}</span></td>
+            <td>${esc(c.detail)}</td>
+          </tr>`;
+      })
+      .join("");
+  }
+
+  const filesBody = document.getElementById("th-files-body");
+  if (filesBody) {
+    const rows = [];
+    for (const f of suspFiles) {
+      rows.push({
+        category: f.category,
+        path: f.path,
+        severity: f.severity === "high" ? "pill-danger" : "pill-warn",
+        sevLabel: f.severity.toUpperCase(),
+        detail: f.detail,
+      });
+    }
+    for (const fc of fim.changes || []) {
+      rows.push({
+        category: "SHA-256 FIM Drift",
+        path: fc.path,
+        severity: fc.severity === "high" ? "pill-danger" : "pill-warn",
+        sevLabel: fc.change_type || "MODIFIED",
+        detail: fc.detail,
+      });
+    }
+    for (const issue of pkgInt.issues || []) {
+      rows.push({
+        category: "Package Integrity",
+        path: "pacman -Qk",
+        severity: "pill-danger",
+        sevLabel: "INTEGRITY",
+        detail: issue,
+      });
+    }
+    for (const pn of th.pacnew_files || []) {
+      rows.push({
+        category: "Unmerged Config (.pacnew)",
+        path: pn,
+        severity: "pill-warn",
+        sevLabel: "CONFIG",
+        detail: "Review and merge post-upgrade configuration file",
+      });
+    }
+    const clamInfected = (th.clamav?.last_scan?.infected_files || []);
+    for (const infLine of clamInfected) {
+      rows.push({
+        category: "ClamAV Signature Match",
+        path: infLine,
+        severity: "pill-danger",
+        sevLabel: "INFECTED",
+        detail: "Flagged by ClamAV on-demand scan",
+      });
+    }
+
+    if (rows.length === 0) {
+      filesBody.innerHTML = `<tr><td colspan="4" class="text-muted">No suspicious binaries, SUID anomalies, package tampering, or unmerged .pacnew files found.</td></tr>`;
+    } else {
+      filesBody.innerHTML = rows
+        .map(
+          (row) => `
+          <tr>
+            <td><strong>${esc(row.category)}</strong></td>
+            <td class="text-muted">${esc(row.path)}</td>
+            <td><span class="pill ${row.severity}">${esc(row.sevLabel)}</span></td>
+            <td>${esc(row.detail)}</td>
+          </tr>`
+        )
+        .join("");
+    }
+  }
+
   // TAB 5: STORAGE & CACHE
   document.getElementById("st-reclaim-pill").textContent =
     `${st.cleanup.reclaimable_total_human} Reclaimable`;
   document.getElementById("st-paccache-sub").textContent =
-    `Total: ${st.cleanup.paccache_total_human} (${st.cleanup.paccache_reclaim_human} older than 2 versions)`;
+    `Total: ${st.cleanup.paccache_total_human} (${st.cleanup.paccache_reclaim_human} reclaimable)`;
+  const safeCacheSub = document.getElementById("st-safecache-sub");
+  if (safeCacheSub) {
+    safeCacheSub.textContent = `Reclaimable: ${st.cleanup.safe_user_cache_human || "0 B"} (of ${st.cleanup.user_cache_total_human || "0 B"} total ~/.cache)`;
+  }
   document.getElementById("st-yay-sub").textContent =
     `Reclaimable: ${st.cleanup.yay_cache_human}`;
+  const trashSub = document.getElementById("st-trash-sub");
+  if (trashSub) {
+    trashSub.textContent = `Current size: ${st.cleanup.trash_human || "0 B"}`;
+  }
+  const coreSub = document.getElementById("st-coredump-sub");
+  if (coreSub) {
+    coreSub.textContent = `${st.cleanup.coredump_count || 0} core file(s) (${st.cleanup.coredump_human || "0 B"})`;
+  }
   document.getElementById("st-journal-sub").textContent =
     `Current size: ${st.cleanup.journal_human}`;
   document.getElementById("st-orphans-sub").textContent =
@@ -545,6 +719,28 @@ function renderReport(r) {
         </div>`;
     })
     .join("");
+
+  const ucTotalEl = document.getElementById("st-usercache-total");
+  if (ucTotalEl) ucTotalEl.textContent = st.cleanup.user_cache_total_human || "0 B";
+  const cacheBarsEl = document.getElementById("st-cache-bars");
+  if (cacheBarsEl) {
+    const cacheList = st.cleanup.user_cache_breakdown || [];
+    const maxCacheBytes = Math.max(1, ...cacheList.map((c) => c.bytes));
+    cacheBarsEl.innerHTML = cacheList
+      .map((c) => {
+        const pct = Math.max(3, Math.round((c.bytes / maxCacheBytes) * 100));
+        const tag = c.safe_clean ? `<span class="text-muted"> (safe build/shader cache)</span>` : "";
+        return `
+          <div class="progress-group">
+            <div class="progress-label">
+              <span><strong>${esc(c.path)}</strong>${tag}</span>
+              <span>${esc(c.human)}</span>
+            </div>
+            <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+          </div>`;
+      })
+      .join("");
+  }
 }
 
 async function loadInitialReport() {
@@ -639,6 +835,43 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-approve-services").addEventListener("click", () => {
     postAction("approve-services-baseline");
   });
+
+  const btnClamScan = document.getElementById("btn-clam-scan");
+  if (btnClamScan) {
+    btnClamScan.addEventListener("click", async () => {
+      btnClamScan.disabled = true;
+      const origText = btnClamScan.innerHTML;
+      btnClamScan.textContent = "Scanning with ClamAV...";
+      showToast("Running low-priority ClamAV scan on Downloads & temp folders...");
+      try {
+        await postAction("run-clamav-scan");
+      } finally {
+        btnClamScan.disabled = false;
+        btnClamScan.innerHTML = origText;
+      }
+    });
+  }
+
+  const btnClamUpdate = document.getElementById("btn-clam-update");
+  if (btnClamUpdate) {
+    btnClamUpdate.addEventListener("click", async () => {
+      btnClamUpdate.disabled = true;
+      btnClamUpdate.textContent = "Updating DB...";
+      try {
+        await postAction("update-clamav-db");
+      } finally {
+        btnClamUpdate.disabled = false;
+        btnClamUpdate.textContent = "Update Virus DB (freshclam)";
+      }
+    });
+  }
+
+  const btnFimRebase = document.getElementById("btn-fim-rebaseline");
+  if (btnFimRebase) {
+    btnFimRebase.addEventListener("click", () => {
+      postAction("approve-fim-baseline");
+    });
+  }
 
   document.querySelectorAll("[data-action]").forEach((btn) => {
     btn.addEventListener("click", () => postAction(btn.dataset.action));
