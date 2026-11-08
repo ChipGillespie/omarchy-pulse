@@ -53,7 +53,18 @@ if command -v omarchy >/dev/null 2>&1; then
   omarchy menu refresh >/dev/null 2>&1 || true
 fi
 
-# 4. Install and enable weekly systemd --user timer
+# 4. Install Omarchy top-bar widget (chip.pulse) into ~/.config/omarchy/plugins/chip.pulse
+if [[ -d "$PROJECT_DIR/plugin/chip.pulse" ]]; then
+  mkdir -p "$HOME/.config/omarchy/plugins/chip.pulse/i18n"
+  cp "$PROJECT_DIR/plugin/chip.pulse/manifest.json" "$HOME/.config/omarchy/plugins/chip.pulse/"
+  cp "$PROJECT_DIR/plugin/chip.pulse/BarWidget.qml" "$HOME/.config/omarchy/plugins/chip.pulse/"
+  cp "$PROJECT_DIR/plugin/chip.pulse/i18n/en.json" "$HOME/.config/omarchy/plugins/chip.pulse/i18n/"
+  if command -v omarchy-shell >/dev/null 2>&1; then
+    omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  fi
+fi
+
+# 5. Install and enable weekly systemd --user timer
 mkdir -p "$HOME/.config/systemd/user"
 cp "$PROJECT_DIR/systemd/omarchy-pulse.service" "$HOME/.config/systemd/user/"
 cp "$PROJECT_DIR/systemd/omarchy-pulse.timer" "$HOME/.config/systemd/user/"

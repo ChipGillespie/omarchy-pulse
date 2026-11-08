@@ -1,6 +1,6 @@
-# Omarchy Pulse — System Health, Live Telemetry & Security Audit Dashboard
+# Omarchy Pulse (v1.1.0) — System Health, Live Telemetry, FIM & Security Audit Suite
 
-A local-first, zero-dependency system health, package update, live `btop`-style resource monitor, and network security audit dashboard built for [Omarchy](https://omarchy.org/) (Arch Linux + Hyprland).
+A local-first, zero-dependency system health, package update, live `btop`-style resource monitor, SHA-256 File Integrity Monitor (FIM), threat/ClamAV scanner, and network security audit dashboard built for [Omarchy](https://omarchy.org/) (Arch Linux + Hyprland).
 
 ---
 
@@ -49,6 +49,26 @@ git clone https://github.com/ChipGillespie/omarchy-pulse.git ~/Projects/omarchy-
 cd ~/Projects/omarchy-pulse
 ./install.sh
 ```
+
+### Optional: On-Demand ClamAV Malware Signatures (0 MB Idle RAM)
+
+To enable the **Run Deep ClamAV Scan** button in the **Threat & Malware Scan** tab without running any background daemons:
+
+```bash
+sudo pacman -S --needed clamav
+sudo systemctl disable --now clamav-daemon.service clamav-freshclam.service 2>/dev/null || true
+sudo freshclam
+```
+
+### Optional: Keybinding (`SUPER + H`) & Bar Widget Next to Clock
+
+Add a keybinding in `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + H", "System Health (Omarchy Pulse)", "omarchy-pulse-launch")
+```
+
+To place the `chip.pulse` icon immediately left of the clock, add `{"id": "chip.pulse"}` to `bar.layout.centerBegin` in `~/.config/omarchy/shell.json`.
 
 ### Commands
 

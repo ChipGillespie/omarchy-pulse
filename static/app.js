@@ -40,7 +40,7 @@ function applyTheme(themeObj) {
   }
   const themeLbl = document.getElementById("sidebar-theme-label");
   if (themeLbl && themeObj.theme_name) {
-    themeLbl.textContent = `Theme: ${themeObj.theme_name}`;
+    themeLbl.textContent = `v1.1.0 • ${themeObj.theme_name}`;
   }
 }
 
