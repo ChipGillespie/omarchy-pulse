@@ -21,7 +21,10 @@ $TARGET_USER ALL=(root) NOPASSWD: $HELPER_DST status, \\
   $HELPER_DST firewall, \\
   $HELPER_DST btrfs-health, \\
   $HELPER_DST clean-paccache, \\
-  $HELPER_DST vacuum-journal
+  $HELPER_DST vacuum-journal, \\
+  $HELPER_DST clean-coredumps, \\
+  $HELPER_DST freshclam-update, \\
+  $HELPER_DST pacnew-list
 EOF
 
 echo "Installing Omarchy Pulse root helper and validating sudoers rule..."

@@ -31,6 +31,8 @@ class ServerState:
         self.last_heartbeat = time.monotonic()
         self.client_connected = False
         self.active_requests = 0
+        self.sse_clients = 0
+        self.sse_ever_connected = False
         self.shutdown_requested_at: float | None = None
 
     def record_heartbeat(self) -> None:
@@ -53,6 +55,19 @@ class ServerState:
             self.active_requests = max(0, self.active_requests - 1)
             self.last_heartbeat = time.monotonic()
 
+    def begin_sse(self) -> None:
+        with self.lock:
+            self.client_connected = True
+            self.sse_ever_connected = True
+            self.sse_clients += 1
+            self.last_heartbeat = time.monotonic()
+            self.shutdown_requested_at = None
+
+    def end_sse(self) -> None:
+        with self.lock:
+            self.sse_clients = max(0, self.sse_clients - 1)
+            self.last_heartbeat = time.monotonic()
+
 
 STATE = ServerState()
 
@@ -66,12 +81,15 @@ class PulseRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: Any, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def _serve_static(self, rel_path: str) -> None:
         if not rel_path or rel_path == "/":
@@ -83,16 +101,42 @@ class PulseRequestHandler(BaseHTTPRequestHandler):
 
         mime, _ = mimetypes.guess_type(str(target))
         content = target.read_bytes()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", mime or "application/octet-stream")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", mime or "application/octet-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == "/api/events":
+            STATE.begin_sse()
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                while True:
+                    for _ in range(4):
+                        with STATE.lock:
+                            if STATE.shutdown_requested_at is not None:
+                                return
+                        time.sleep(0.5)
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    STATE.record_heartbeat()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                STATE.end_sse()
+            return
 
         if path == "/api/heartbeat":
             STATE.record_heartbeat()
@@ -204,8 +248,14 @@ def _watchdog_loop(server: ThreadingHTTPServer) -> None:
                 and (now - STATE.shutdown_requested_at) > 1.5
             ):
                 break
-            # If client connected previously and stopped sending 5s heartbeats for > 12s
-            if STATE.client_connected and (now - STATE.last_heartbeat) > 12.0:
+            # While an SSE stream is actively open, the window is still open
+            if STATE.sse_clients > 0:
+                continue
+            # If SSE was connected and all SSE streams closed for > 3s, exit
+            if STATE.sse_ever_connected and (now - STATE.last_heartbeat) > 3.0:
+                break
+            # Fallback if SSE wasn't used (180s survives Chromium's 60s background timer throttling)
+            if STATE.client_connected and (now - STATE.last_heartbeat) > 180.0:
                 break
             # If never connected within 25s of launch, exit
             if not STATE.client_connected and (now - STATE.start_time) > 25.0:

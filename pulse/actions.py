@@ -325,17 +325,38 @@ def handle_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     if action == "update-clamav-db":
+        if not shutil.which("freshclam"):
+            return {
+                "ok": False,
+                "message": "ClamAV (freshclam) is not installed.",
+                "report": run_full_scan(),
+            }
         if helper_available():
             rc, out, err = _run(
-                ["sudo", "-n", str(HELPER_BIN), "freshclam-update"], timeout=90
+                ["sudo", "-n", str(HELPER_BIN), "freshclam-update"], timeout=120
             )
             if rc == 0:
+                combined = f"{out}\n{err}".lower()
+                if "updated (" in combined or "downloaded" in combined:
+                    msg = "Updated ClamAV virus signature database (freshclam)."
+                else:
+                    msg = "ClamAV virus signature database is already up to date."
                 return {
                     "ok": True,
-                    "message": "Updated ClamAV virus signature database (freshclam).",
+                    "message": msg,
                     "report": run_full_scan(),
                 }
-        _launch_floating_terminal("sudo freshclam")
+            err_lower = f"{err}\n{out}".lower()
+            if "password is required" not in err_lower and "not allowed" not in err_lower:
+                detail = (err or out or "unknown error").strip().splitlines()[-1]
+                return {
+                    "ok": False,
+                    "message": f"ClamAV DB update failed: {detail}",
+                    "report": run_full_scan(),
+                }
+        _launch_floating_terminal(
+            f"sudo freshclam; {PROJECT_ROOT}/bin/omarchy-pulse-scan --quiet"
+        )
         return {
             "ok": True,
             "message": "Launched freshclam signature update in floating terminal.",

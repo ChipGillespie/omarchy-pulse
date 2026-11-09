@@ -40,7 +40,7 @@ function applyTheme(themeObj) {
   }
   const themeLbl = document.getElementById("sidebar-theme-label");
   if (themeLbl && themeObj.theme_name) {
-    themeLbl.textContent = `v1.1.0 • ${themeObj.theme_name}`;
+    themeLbl.textContent = `v1.1.1 • ${themeObj.theme_name}`;
   }
 }
 
@@ -857,6 +857,7 @@ document.addEventListener("DOMContentLoaded", () => {
     btnClamUpdate.addEventListener("click", async () => {
       btnClamUpdate.disabled = true;
       btnClamUpdate.textContent = "Updating DB...";
+      showToast("Checking & updating ClamAV virus definitions (freshclam)...");
       try {
         await postAction("update-clamav-db");
       } finally {
@@ -879,6 +880,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   loadInitialReport();
 
+  // Persistent SSE stream keeps the on-demand server alive even when the window
+  // is on an inactive workspace or occluded (where Chromium throttles timers).
+  let evtSource = null;
+  if (window.EventSource) {
+    evtSource = new EventSource("/api/events");
+  }
+
   // Heartbeat every 5 seconds; also hot-reloads theme if colors.toml mtime changed
   setInterval(async () => {
     try {
@@ -894,6 +902,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Notify server when window closes
   window.addEventListener("pagehide", () => {
+    if (evtSource) {
+      evtSource.close();
+      evtSource = null;
+    }
     if (navigator.sendBeacon) {
       navigator.sendBeacon("/api/shutdown", "{}");
     }

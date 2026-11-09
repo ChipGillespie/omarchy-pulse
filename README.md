@@ -1,4 +1,4 @@
-# Omarchy Pulse (v1.1.0) — System Health, Live Telemetry, FIM & Security Audit Suite
+# Omarchy Pulse (v1.1.1) — System Health, Live Telemetry, FIM & Security Audit Suite
 
 A local-first, zero-dependency system health, package update, live `btop`-style resource monitor, SHA-256 File Integrity Monitor (FIM), threat/ClamAV scanner, and network security audit dashboard built for [Omarchy](https://omarchy.org/) (Arch Linux + Hyprland).
 
